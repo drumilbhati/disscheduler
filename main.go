@@ -34,6 +34,9 @@ func main() {
 	// Create a new store to interact with the database
 	s := store.NewStore(db)
 
+	// Start workers
+	s.StartWorkers(5)
+
 	// Create handlers
 	j := controller.NewJobHandler(s)
 

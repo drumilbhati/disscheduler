@@ -3,14 +3,38 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log"
+	"time"
 
 	"github.com/drumilbhati/disscheduler/model"
 )
 
-func (s *Store) drainJob() error {
+func (s *Store) StartWorkers(n int) {
+	for i := range n {
+		go s.worker(i)
+	}
+}
+
+func (s *Store) worker(id int) {
+	for {
+		job, err := s.drainJob()
+		if err != nil {
+			log.Printf("worker=%d drain error: %v\n", id, err)
+			time.Sleep(time.Second)
+			continue
+		}
+		if job == nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		s.processJob(job)
+	}
+}
+
+func (s *Store) drainJob() (*model.Job, error) {
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
@@ -18,7 +42,8 @@ func (s *Store) drainJob() error {
 
 	err = tx.QueryRow(
 		`SELECT id, type, payload, priority, run_at, idempotency_key, status, attempts, max_attempts, created_at, updated_at FROM job
-		WHERE status = 'queued' AND run_at <= NOW()
+		WHERE status = 'queued'
+		AND run_at IS NULL OR run_at <= NOW()
 		ORDER BY priority DESC, run_at ASC
 		FOR UPDATE
 		SKIP LOCKED
@@ -38,9 +63,9 @@ func (s *Store) drainJob() error {
 	)
 
 	if err == sql.ErrNoRows {
-		return nil
+		return nil, nil
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = tx.Exec(
@@ -50,37 +75,12 @@ func (s *Store) drainJob() error {
 	)
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	go s.processJob(job)
-
-	return nil
-}
-
-func (s *Store) processJob(job model.Job) {
-	var err error
-	switch job.Type {
-	case "email":
-		// Process email jobi
-	case "report":
-		// Process report job
-	case "webhook":
-		// Process webhook job
-	case "cleanup":
-		// Process cleanup job
-	default:
-		// Handle unknown job type
-	}
-
-	if err != nil {
-		// mark the job as failed and log the error
-	}
-
-	// mark the job as completed
+	return &job, nil
 }

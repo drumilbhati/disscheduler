@@ -1,6 +1,8 @@
 package store
 
 import (
+	"log"
+	"math/rand"
 	"time"
 
 	"github.com/drumilbhati/disscheduler/model"
@@ -68,4 +70,45 @@ func (s *Store) GetAllJobs() ([]model.Job, error) {
 	}
 
 	return jobs, nil
+}
+
+func (s *Store) processJob(job *model.Job) {
+	// Simulate job processing
+	time.Sleep(2 * time.Second)
+
+	_, err := s.db.Exec(
+		`UPDATE job SET status = $1, updated_at = NOW() WHERE id = $2`,
+		model.StatusSucceeded,
+		job.ID,
+	)
+	if err == nil {
+		return
+	}
+
+	job.Attempts++
+	if job.Attempts >= job.MaxAttempts {
+		if _, updateErr := s.db.Exec(
+			`UPDATE job SET status = $1, attempts = $2, updated_at = NOW() WHERE id = $3`,
+			model.StatusFailed,
+			job.Attempts,
+			job.ID,
+		); updateErr != nil {
+			log.Printf("error updating failed status for job %s: %v", job.ID, updateErr)
+		}
+		return
+	}
+
+	maxJitterSeconds := 1 << job.Attempts
+	jitterSeconds := rand.Intn(maxJitterSeconds)
+	retryAt := time.Now().UTC().Add(time.Second * time.Duration(jitterSeconds))
+	job.RunAt = &retryAt
+	if _, updateErr := s.db.Exec(
+		`UPDATE job SET status = $1, attempts = $2, run_at = $3, updated_at = NOW() WHERE id = $4`,
+		model.StatusQueued,
+		job.Attempts,
+		job.RunAt,
+		job.ID,
+	); updateErr != nil {
+		log.Printf("error requeueing job %s: %v", job.ID, updateErr)
+	}
 }
