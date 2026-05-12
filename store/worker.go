@@ -43,7 +43,7 @@ func (s *Store) drainJob() (*model.Job, error) {
 	err = tx.QueryRow(
 		`SELECT id, type, payload, priority, run_at, idempotency_key, status, attempts, max_attempts, created_at, updated_at FROM job
 		WHERE status = 'queued'
-		AND run_at IS NULL OR run_at <= NOW()
+		AND (run_at IS NULL OR run_at <= NOW())
 		ORDER BY priority DESC, run_at ASC
 		FOR UPDATE
 		SKIP LOCKED
