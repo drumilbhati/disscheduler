@@ -9,30 +9,45 @@ import (
 	"github.com/drumilbhati/disscheduler/model"
 )
 
-func (s *Store) StartWorkers(n int) {
+func (s *Store) StartWorkers(n int, ctx context.Context) {
 	for i := range n {
-		go s.worker(i)
+		go s.worker(i, ctx)
 	}
 }
 
-func (s *Store) worker(id int) {
+func (s *Store) worker(id int, ctx context.Context) {
 	for {
-		job, err := s.drainJob()
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		job, err := s.drainJob(ctx)
+
 		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
 			log.Printf("worker=%d drain error: %v\n", id, err)
-			time.Sleep(time.Second)
 			continue
 		}
 		if job == nil {
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
 			continue
 		}
-		s.processJob(job)
+		s.processJob(job, ctx)
 	}
 }
 
-func (s *Store) drainJob() (*model.Job, error) {
-	tx, err := s.db.BeginTx(context.Background(), nil)
+func (s *Store) drainJob(ctx context.Context) (*model.Job, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +55,8 @@ func (s *Store) drainJob() (*model.Job, error) {
 
 	var job model.Job
 
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(
+		ctx,
 		`SELECT id, type, payload, priority, run_at, idempotency_key, status, attempts, max_attempts, created_at, updated_at FROM job
 		WHERE status = 'queued'
 		AND (run_at IS NULL OR run_at <= NOW())
@@ -68,7 +84,8 @@ func (s *Store) drainJob() (*model.Job, error) {
 		return nil, err
 	}
 
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(
+		ctx,
 		`UPDATE job
 		SET status = 'running', updated_at = NOW() WHERE id =$1`,
 		job.ID,

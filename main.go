@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/drumilbhati/disscheduler/controller"
 	"github.com/drumilbhati/disscheduler/db"
@@ -34,8 +39,13 @@ func main() {
 	// Create a new store to interact with the database
 	s := store.NewStore(db)
 
+	// Create context for workers
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	defer stop()
+
 	// Start workers
-	s.StartWorkers(5)
+	s.StartWorkers(5, ctx)
 
 	// Create handlers
 	j := controller.NewJobHandler(s)
@@ -47,5 +57,31 @@ func main() {
 	r.Get("/job", j.GetAllJobs)
 	r.Post("/job", j.CreateJob)
 
-	log.Fatal(http.ListenAndServe(port, r))
+	server := &http.Server{
+		Addr:    port,
+		Handler: r,
+	}
+
+	serverErrCh := make(chan error, 1)
+
+	go func() {
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("shutdown signal received")
+	case err := <-serverErrCh:
+		log.Fatal("server failed to start, err:", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
 }

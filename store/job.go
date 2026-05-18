@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"log"
 	"math/rand"
 	"time"
@@ -72,11 +73,16 @@ func (s *Store) GetAllJobs() ([]model.Job, error) {
 	return jobs, nil
 }
 
-func (s *Store) processJob(job *model.Job) {
+func (s *Store) processJob(job *model.Job, ctx context.Context) {
 	// Simulate job processing
-	time.Sleep(2 * time.Second)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
 
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(
+		ctx,
 		`UPDATE job SET status = $1, updated_at = NOW() WHERE id = $2`,
 		model.StatusSucceeded,
 		job.ID,
@@ -87,7 +93,8 @@ func (s *Store) processJob(job *model.Job) {
 
 	job.Attempts++
 	if job.Attempts >= job.MaxAttempts {
-		if _, updateErr := s.db.Exec(
+		if _, updateErr := s.db.ExecContext(
+			ctx,
 			`UPDATE job SET status = $1, attempts = $2, updated_at = NOW() WHERE id = $3`,
 			model.StatusFailed,
 			job.Attempts,
@@ -102,7 +109,8 @@ func (s *Store) processJob(job *model.Job) {
 	jitterSeconds := rand.Intn(maxJitterSeconds)
 	retryAt := time.Now().UTC().Add(time.Second * time.Duration(jitterSeconds))
 	job.RunAt = &retryAt
-	if _, updateErr := s.db.Exec(
+	if _, updateErr := s.db.ExecContext(
+		ctx,
 		`UPDATE job SET status = $1, attempts = $2, run_at = $3, updated_at = NOW() WHERE id = $4`,
 		model.StatusQueued,
 		job.Attempts,
