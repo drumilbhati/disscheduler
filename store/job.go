@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"math/rand"
 	"time"
@@ -11,11 +12,13 @@ import (
 )
 
 func (s *Store) CreateJob(job *model.Job) error {
+	// Generate a new UUID for job ID
 	jobID, err := uuid.NewV4()
 	if err != nil {
 		return err
 	}
 
+	// Set initial job fields
 	now := time.Now().UTC()
 	job.ID = jobID
 	job.Status = model.StatusQueued
@@ -71,6 +74,62 @@ func (s *Store) GetAllJobs() ([]model.Job, error) {
 	}
 
 	return jobs, nil
+}
+
+func (s *Store) ClaimJob(ctx context.Context) (*model.Job, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var job model.Job
+
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT id, type, payload, priority, run_at, idempotency_key, status, attempts, max_attempts, created_at, updated_at FROM job
+		WHERE status = 'queued'
+		AND (run_at IS NULL OR run_at <= NOW())
+		ORDER BY priority DESC, run_at ASC
+		FOR UPDATE
+		SKIP LOCKED
+		LIMIT 1`,
+	).Scan(
+		&job.ID,
+		&job.Type,
+		&job.Payload,
+		&job.Priority,
+		&job.RunAt,
+		&job.IdempotencyKey,
+		&job.Status,
+		&job.Attempts,
+		&job.MaxAttempts,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.ExecContext(
+		ctx,
+		`UPDATE job
+		SET status = 'running', updated_at = NOW() WHERE id =$1`,
+		job.ID,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
 }
 
 func (s *Store) processJob(job *model.Job, ctx context.Context) {
